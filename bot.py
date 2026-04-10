@@ -133,16 +133,16 @@ async def cmd_start(message: Message):
     protected_user_id = message.from_user.id
 
     await message.answer(
-        "🛡 *Бот безпеки активовано*\n\n"
-        "Я буду регулярно перевіряти що з тобою все добре.\n\n"
-        "*Команди:*\n"
-        "/monitor\_on — запустити моніторинг\n"
-        "/monitor\_off — зупинити моніторинг\n"
-        "/add\_contact — додати екстрений контакт\n"
-        "/contacts — список контактів\n"
-        "/interval — змінити інтервал перевірок\n"
-        "/status — поточний статус\n"
-        "/check\_now — перевірка зараз\n\n"
+        r"🛡 *Бот безпеки активовано*\n\n"
+        r"Я буду регулярно перевіряти що з тобою все добре.\n\n"
+        r"*Команди:*\n"
+        r"/monitor\_on — запустити моніторинг\n"
+        r"/monitor\_off — зупинити моніторинг\n"
+        r"/add\_contact — додати екстрений контакт\n"
+        r"/contacts — список контактів\n"
+        r"/interval — змінити інтервал перевірок\n"
+        r"/status — поточний статус\n"
+        r"/check\_now — перевірка зараз\n\n"
         f"Твій ID: `{message.from_user.id}`",
         parse_mode="Markdown"
     )
