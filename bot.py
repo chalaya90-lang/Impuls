@@ -4,337 +4,164 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional
 
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton
+)
 from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(name)
 
+# Токен бери зі свого оточення
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
 
-# --- State ---
-monitoring_active = False
+# --- Тимчасова база даних (краще потім замінити на SQLite) ---
 protected_user_id: Optional[int] = None
-emergency_contacts: list[int] = []  # Telegram user IDs
-check_interval_minutes = 60
-response_timeout_minutes = 10
-last_check_message_id: Optional[int] = None
+emergency_contacts = {} # {user_id: phone_number}
+monitoring_active = True
 waiting_for_response = False
-missed_checks = 0
 
-def get_check_keyboard():
+# --- Клавіатури ---
+
+def get_main_keyboard():
+    # Головне меню для подруги
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📍 Надіслати мою локацію", request_location=True)],
+            [KeyboardButton(text="📞 Додати екстрений контакт", request_contact=True)],
+            [KeyboardButton(text="⚙️ Статус моніторингу")]
+        ],
+        resize_keyboard=True
+    )
+
+def get_emergency_keyboard():
+    # Меню для тих, хто рятує (екстрені контакти)
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="❓ Перевірити, чи все добре?")]
+        ],
+        resize_keyboard=True
+    )
+
+def get_check_inline():
+    # Кнопка підтвердження безпеки
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Я в порядку", callback_data="im_ok")
+        InlineKeyboardButton(text="✅ Я в порядку! Все добре", callback_data="im_ok")
     ]])
 
-async def send_check():
-    global last_check_message_id, waiting_for_response, missed_checks
+# --- Логіка перевірок ---
 
-    if not monitoring_active or not protected_user_id:
+async def send_check_request():
+    global waiting_for_response
+    if not protected_user_id or not monitoring_active:
         return
 
     waiting_for_response = True
-
-    msg = await bot.send_message(
-        chat_id=protected_user_id,
-        text=(
-            "🔔 *Перевірка безпеки*\n\n"
-            "Натисни кнопку, щоб підтвердити що все добре.\n"
-            f"У тебе є *{response_timeout_minutes} хвилин*."
-        ),
-        parse_mode="Markdown",
-        reply_markup=get_check_keyboard()
+    await bot.send_message(
+        protected_user_id,
+        "🔔 ПЕРЕВІРКА БЕЗПЕКИ\nБудь ласка, підтвердь, що ти на зв'язку!",
+        reply_markup=get_check_inline()
     )
-    last_check_message_id = msg.message_id
 
-    # Schedule timeout check
+    # Запускаємо таймер на 10 хвилин до тривоги
     scheduler.add_job(
-        check_timeout,
+        send_alarm,
         'date',
-        run_date=datetime.now() + timedelta(minutes=response_timeout_minutes),
-        id='timeout_check',
+        run_date=datetime.now() + timedelta(minutes=10),
+        id='alarm_job',
         replace_existing=True
     )
 
-async def check_timeout():
-    global waiting_for_response, missed_checks
-
+async def send_alarm():
+    global waiting_for_response
     if not waiting_for_response:
-        return  # Was answered
-
-    missed_checks += 1
-    waiting_for_response = False
-
-    logger.warning(f"No response! Missed checks: {missed_checks}")
-
-    # Alert protected user
-    if protected_user_id:
-        await bot.send_message(
-            protected_user_id,
-            "⚠️ Час вийшов! Надсилаю тривогу екстреним контактам...",
-        )
-
-    # Alert emergency contacts
-    if not emergency_contacts:
-        if protected_user_id:
-            await bot.send_message(
-                protected_user_id,
-                "❗ Екстрені контакти не додані! Додай через /add_contact",
-            )
         return
 
-    alert_text = (
-        "🚨 *ТРИВОГА*\n\n"
-        "Твій підзахисний контакт *не відповів* на перевірку безпеки!\n\n"
-        f"⏰ Час: {datetime.now().strftime('%H:%M, %d.%m.%Y')}\n"
-        f"❌ Пропущених перевірок поспіль: {missed_checks}\n\n"
-        "Перевір чи все з ним/нею добре!"
-    )
-
-    for contact_id in emergency_contacts:
+    alert_msg = "🚨 УВАГА! ТРИВОГА! Подруга не відповіла на перевірку безпеки!"
+    
+    for contact_id in emergency_contacts.keys():
         try:
-            await bot.send_message(contact_id, alert_text, parse_mode="Markdown")
+            await bot.send_message(contact_id, alert_msg)
         except Exception as e:
-            logger.error(f"Failed to notify contact {contact_id}: {e}")
+            logger.error(f"Не вдалося сповістити {contact_id}: {e}")
 
-# --- Handlers ---
-
-@dp.callback_query(F.data == "im_ok")
-async def handle_ok(callback: CallbackQuery):
-    global waiting_for_response, missed_checks
-
-    if callback.from_user.id != protected_user_id:
-        await callback.answer("Це не твій бот 😊")
-        return
-
-    waiting_for_response = False
-    missed_checks = 0
-
-    # Remove timeout job
-    try:
-        scheduler.remove_job('timeout_check')
-    except:
-        pass
-
-    await callback.message.edit_text("✅ Чудово! До наступної перевірки 💚")
-    await callback.answer("Відмічено! Все добре 💚")
-
+# --- Хендлери ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     global protected_user_id
-
-    protected_user_id = message.from_user.id
-
+    # Якщо хочеш розділити ролі, тут можна додати логіку
     await message.answer(
-        r"🛡 *Бот безпеки активовано*\n\n"
-        r"Я буду регулярно перевіряти що з тобою все добре.\n\n"
-        r"*Команди:*\n"
-        r"/monitor\_on — запустити моніторинг\n"
-        r"/monitor\_off — зупинити моніторинг\n"
-        r"/add\_contact — додати екстрений контакт\n"
-        r"/contacts — список контактів\n"
-        r"/interval — змінити інтервал перевірок\n"
-        r"/status — поточний статус\n"
-        r"/check\_now — перевірка зараз\n\n"
-        f"Твій ID: `{message.from_user.id}`",
-        parse_mode="Markdown"
+        "Привіт! Я твій бот-захисник. Використовуй кнопки нижче для налаштування.",
+        reply_markup=get_main_keyboard()
     )
 
-
-@dp.message(Command("monitor_on"))
-async def cmd_monitor_on(message: Message):
-    global monitoring_active
-
-    if message.from_user.id != protected_user_id:
-        await message.answer("❌ Тільки захищений користувач може керувати ботом.")
+# Додавання екстреного контакту через кнопку телефону
+@dp.message(F.contact)
+async def handle_contact(message: Message):
+    contact_id = message.contact.user_id
+    if not contact_id:
+        await message.answer("Цей контакт не має Telegram ID, я не зможу йому написати.")
         return
-
-    if monitoring_active:
-        await message.answer("✅ Моніторинг вже активний.")
-        return
-
-    monitoring_active = True
-
-    # Schedule recurring checks
-    scheduler.add_job(
-        send_check,
-        'interval',
-        minutes=check_interval_minutes,
-        id='regular_check',
-        replace_existing=True,
-        next_run_time=datetime.now() + timedelta(minutes=check_interval_minutes)
-    )
-
-    await message.answer(
-        f"🟢 Моніторинг запущено!\n"
-        f"Перевірки кожні *{check_interval_minutes} хв*.\n"
-        f"Час на відповідь: *{response_timeout_minutes} хв*.",
-        parse_mode="Markdown"
-    )
-
-
-@dp.message(Command("monitor_off"))
-async def cmd_monitor_off(message: Message):
-    global monitoring_active
-
-    if message.from_user.id != protected_user_id:
-        await message.answer("❌ Тільки захищений користувач може керувати ботом.")
-        return
-
-    monitoring_active = False
-
-    try:
-        scheduler.remove_job('regular_check')
-        scheduler.remove_job('timeout_check')
-    except:
-        pass
-
-    await message.answer("🔴 Моніторинг зупинено.")
-
-
-@dp.message(Command("add_contact"))
-async def cmd_add_contact(message: Message):
-    parts = message.text.split()
-    if len(parts) < 2:
-        await message.answer(
-            "Вкажи Telegram ID контакту:\n"
-            "`/add_contact 123456789`\n\n"
-            "Щоб дізнатись свій ID — перешли будь-яке повідомлення боту @userinfobot",
-            parse_mode="Markdown"
-        )
-        return
-
-    try:
-        contact_id = int(parts[1])
-    except ValueError:
-        await message.answer("❌ ID має бути числом.")
-        return
-
-    if contact_id in emergency_contacts:
-        await message.answer("✅ Цей контакт вже є в списку.")
-        return
-
-    emergency_contacts.append(contact_id)
-
-    # Test message to contact
+    
+    emergency_contacts[contact_id] = message.contact.phone_number
+    await message.answer(f"✅ Контакт {message.contact.first_name} додано до списку рятівників!")
+    
+    # Сповіщаємо рятівника
     try:
         await bot.send_message(
-            contact_id,
-            "🛡 Тебе додано як екстрений контакт у боті безпеки.\n"
-            "Якщо підзахисна людина не відповість на перевірку — ти отримаєш тривогу."
+            contact_id, 
+            "Ти доданий як екстрений контакт! Тепер ти можеш перевіряти статус подруги.",
+            reply_markup=get_emergency_keyboard()
         )
-        await message.answer(f"✅ Контакт `{contact_id}` додано. Їм надіслано повідомлення.", parse_mode="Markdown")
-    except Exception as e:
-        await message.answer(
-            f"⚠️ Контакт додано, але не вдалось надіслати тестове повідомлення.\n"
-            f"Переконайся що ця людина запустила бота командою /start.\n"
-            f"Помилка: {e}"
-        )
+    except:
+        await message.answer("⚠️ Рятівник має спочатку сам запустити цього бота, щоб я міг йому писати.")
+[10.04.2026 15:10] Любов: # Обробка локації
+@dp.message(F.location)
+async def handle_location(message: Message):
+    lat = message.location.latitude
+    lon = message.location.longitude
+    await message.answer(f"📍 Локацію отримано! Координати збережено.")
+    # Тут можна додати відправку локації контактам, якщо це тривога
 
-
-@dp.message(Command("contacts"))
-async def cmd_contacts(message: Message):
-    if not emergency_contacts:
-        await message.answer("📋 Екстрених контактів немає.\nДодай: `/add_contact 123456789`", parse_mode="Markdown")
-        return
-
-    text = "📋 *Екстрені контакти:*\n"
-    for i, c in enumerate(emergency_contacts, 1):
-        text += f"{i}. `{c}`\n"
-    text += "\nВидалити: `/remove_contact 123456789`"
-    await message.answer(text, parse_mode="Markdown")
-
-
-@dp.message(Command("remove_contact"))
-async def cmd_remove_contact(message: Message):
-    parts = message.text.split()
-    if len(parts) < 2:
-        await message.answer("Вкажи ID: `/remove_contact 123456789`", parse_mode="Markdown")
-        return
-
-    try:
-        contact_id = int(parts[1])
-    except ValueError:
-        await message.answer("❌ ID має бути числом.")
-        return
-
-    if contact_id in emergency_contacts:
-        emergency_contacts.remove(contact_id)
-        await message.answer(f"✅ Контакт `{contact_id}` видалено.", parse_mode="Markdown")
+# Кнопка від рятівника: "Перевірити чи все добре?"
+@dp.message(F.text == "❓ Перевірити, чи все добре?")
+async def force_check(message: Message):
+    if message.from_user.id in emergency_contacts:
+        await message.answer("Запит надіслано! Чекаємо на відповідь.")
+        await send_check_request()
     else:
-        await message.answer("❌ Такого контакту немає в списку.")
+        await message.answer("У вас немає прав для цієї дії.")
 
-
-@dp.message(Command("interval"))
-async def cmd_interval(message: Message):
-    global check_interval_minutes
-
-    parts = message.text.split()
-    if len(parts) < 2:
-        await message.answer(
-            f"Поточний інтервал: *{check_interval_minutes} хв*\n"
-            f"Змінити: `/interval 30` (від 5 до 1440 хв)",
-            parse_mode="Markdown"
-        )
-        return
-
+# Обробка кнопки "Я в порядку"
+@dp.callback_query(F.data == "im_ok")
+async def handle_ok(callback: CallbackQuery):
+    global waiting_for_response
+    waiting_for_response = False
+    
     try:
-        mins = int(parts[1])
-    except ValueError:
-        await message.answer("❌ Вкажи число хвилин.")
-        return
-
-    if not (5 <= mins <= 1440):
-        await message.answer("❌ Від 5 до 1440 хвилин.")
-        return
-
-    check_interval_minutes = mins
-
-    if monitoring_active:
-        scheduler.reschedule_job('regular_check', trigger='interval', minutes=mins)
-        await message.answer(f"✅ Інтервал змінено на *{mins} хв*. Застосовано одразу.", parse_mode="Markdown")
-    else:
-        await message.answer(f"✅ Інтервал встановлено *{mins} хв*. Запусти `/monitor_on`.", parse_mode="Markdown")
-
-
-@dp.message(Command("status"))
-async def cmd_status(message: Message):
-    status = "🟢 Активний" if monitoring_active else "🔴 Зупинений"
-    waiting = "⏳ Так" if waiting_for_response else "✅ Ні"
-
-    await message.answer(
-        f"📊 *Статус бота:*\n\n"
-        f"Моніторинг: {status}\n"
-        f"Очікує відповіді: {waiting}\n"
-        f"Пропущено підряд: {missed_checks}\n"
-        f"Інтервал: {check_interval_minutes} хв\n"
-        f"Таймаут: {response_timeout_minutes} хв\n"
-        f"Екстрених контактів: {len(emergency_contacts)}",
-        parse_mode="Markdown"
-    )
-
-
-@dp.message(Command("check_now"))
-async def cmd_check_now(message: Message):
-    if message.from_user.id != protected_user_id and message.from_user.id not in emergency_contacts:
-        await message.answer("❌ Немає доступу.")
-        return
-    await send_check()
-    if message.from_user.id != protected_user_id:
-        await message.answer("✅ Перевірку надіслано.")
-
+        scheduler.remove_job('alarm_job')
+    except:
+        pass
+    
+    await callback.message.edit_text("✅ Дякую! Я передам усім, що ти в безпеці.")
+    
+    # Сповіщаємо контакти, що все ок
+    for contact_id in emergency_contacts.keys():
+        await bot.send_message(contact_id, "✅ Подруга підтвердила, що вона в безпеці.")
 
 async def main():
+    # Запуск регулярної перевірки раз на годину
+    scheduler.add_job(send_check_request, 'interval', minutes=60)
     scheduler.start()
     await dp.start_polling(bot)
 
-
-if __name__ == "__main__":
+if name == "main":
     asyncio.run(main())
