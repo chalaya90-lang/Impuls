@@ -123,7 +123,7 @@ async def handle_contact(message: Message):
         )
     except:
         await message.answer("⚠️ Рятівник має спочатку сам запустити цього бота, щоб я міг йому писати.")
-[10.04.2026 15:10] Любов: # Обробка локації
+# Обробка локації
 @dp.message(F.location)
 async def handle_location(message: Message):
     lat = message.location.latitude
