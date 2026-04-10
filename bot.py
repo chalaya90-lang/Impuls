@@ -163,5 +163,5 @@ async def main():
     scheduler.start()
     await dp.start_polling(bot)
 
-if name = "main":
+if name == "main":
     asyncio.run(main())
