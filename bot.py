@@ -14,7 +14,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(name)
+logger = logging.getLogger(Impuls)
 
 # Токен бери зі свого оточення
 BOT_TOKEN = os.getenv("BOT_TOKEN")
