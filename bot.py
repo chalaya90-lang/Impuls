@@ -30,7 +30,7 @@ scheduler = AsyncIOScheduler(timezone=TIMEZONE)
 # ================= СТАН =================
 
 # ID головної користувачки бота
-protected_user_id: Optional[int] = None
+protected_user_id: int = 632237007  # ID подруги — захардкоджено
 
 # Екстрені контакти: {user_id: {"name": str, "phone": str}}
 emergency_contacts: dict = {}
@@ -125,24 +125,21 @@ def ok_inline_kb() -> InlineKeyboardMarkup:
 
 @router.message(Command("start"))
 async def cmd_start(msg: Message):
-    global protected_user_id
-
-    # Якщо це перший запуск — реєструємо як головну користувачку
-    if protected_user_id is None:
-        protected_user_id = msg.from_user.id
+    # Головна користувачка
+    if is_protected(msg.from_user.id):
         await msg.answer(
             "👋 Привіт! Я твій особистий бот безпеки.\n\n"
             "Як це працює:\n"
             "🟢 Увімкни моніторинг — і я буду регулярно питати чи все добре\n"
             "✅ Натискай «Все добре» коли отримуєш пінг\n"
             "🆘 Якщо страшно — натисни СОС і я одразу сповіщу твої контакти з геолокацією\n"
-            "👤 Додай довірених людей через кнопку «Додати контакт'\n\n"
+            "👤 Додай довірених людей через кнопку «Додати контакт»\n\n"
             "Ти в безпеці. Я поруч 💙",
             reply_markup=main_kb(),
         )
         return
 
-    # Якщо це екстрений контакт
+    # Екстрений контакт
     if is_contact(msg.from_user.id):
         name = emergency_contacts[msg.from_user.id]["name"]
         await msg.answer(
@@ -152,7 +149,8 @@ async def cmd_start(msg: Message):
         )
         return
 
-    await msg.answer("Привіт! Напиши /start ще раз якщо виникли проблеми.")
+    # Будь-хто інший
+    await msg.answer("👋 Цей бот особистий і не доступний для інших користувачів.")
 
 # ================= МОНІТОРИНГ =================
 
